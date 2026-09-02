@@ -64,11 +64,7 @@ if (data.hasOwnProperty('clickrefParameter')){
 }
 
 const cookieOptions = {
-  // 'auto' asks GTM to write the cookie to the broadest domain the browser will
-  // actually accept, narrowing until one sticks. Browsers reject cookies scoped to
-  // a public suffix ("com.au", "co.uk"), so this lands on the registrable domain
-  // without us needing to carry a public-suffix list. Falls back to a host-only
-  // cookie if every candidate is rejected.
+  // 'auto' asks GTM to write the cookie to the broadest domain the browser will actually accept
   'domain': 'auto',
   'path': '/',
   'max-age': 60*60*24*365,
