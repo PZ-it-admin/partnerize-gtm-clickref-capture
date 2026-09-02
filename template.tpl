@@ -64,7 +64,12 @@ if (data.hasOwnProperty('clickrefParameter')){
 }
 
 const cookieOptions = {
-  'domain': getRootDomain(getUrl('host')),
+  // 'auto' asks GTM to write the cookie to the broadest domain the browser will
+  // actually accept, narrowing until one sticks. Browsers reject cookies scoped to
+  // a public suffix ("com.au", "co.uk"), so this lands on the registrable domain
+  // without us needing to carry a public-suffix list. Falls back to a host-only
+  // cookie if every candidate is rejected.
+  'domain': 'auto',
   'path': '/',
   'max-age': 60*60*24*365,
   'secure': true
@@ -86,38 +91,6 @@ function getQueryVariable(variable) {
   }
 
   return '';
-}
-
-function extractHostname(url) {
-  var hostname;
-
-  if (url.indexOf("//") > -1) {
-    hostname = url.split('/')[2];
-  } else {
-    hostname = url.split('/')[0];
-  }
-
-  hostname = hostname.split(':')[0];
-  hostname = hostname.split('?')[0];
-
-  return hostname;
-}
-
-function getRootDomain(url) {
-  if (url === undefined){
-    url = getUrl('host');
-  }
-  var domain = extractHostname(url),
-  splitArr = domain.split('.'),
-  arrLen = splitArr.length;
-
-  if (arrLen > 2) {
-    domain = splitArr[arrLen - 2] + '.' + splitArr[arrLen - 1];
-    if (splitArr[arrLen - 2].length == 2 && splitArr[arrLen - 1].length == 2) {
-      domain = splitArr[arrLen - 3] + '.' + domain;
-    }
-  }
-  return domain;
 }
 
 data.gtmOnSuccess();
@@ -303,57 +276,72 @@ ___WEB_PERMISSIONS___
 ___TESTS___
 
 scenarios:
-- name: Test URL Structures
+- name: Cookie domain is delegated to the browser (handles multi-part suffixes)
   code: |-
-    assertThat(getRootDomain('http://www.example.com/'))
-      .isEqualTo('example.com');
-    assertThat(getRootDomain('https://www.example.com/'))
-      .isEqualTo('example.com');
-    assertThat(getRootDomain('https://1.example.com/'))
-      .isEqualTo('example.com');
-    assertThat(getRootDomain('https://1.1.example.com/'))
-      .isEqualTo('example.com');
-    assertThat(getRootDomain('https://1.example.nz'))
-      .isEqualTo('example.nz');
-    assertThat(getRootDomain('https://1.1.example.de'))
-      .isEqualTo('example.de');
-    assertThat(getRootDomain('https://example.co.uk'))
-      .isEqualTo('example.co.uk');
-    assertThat(getRootDomain('b.c.example.jp'))
-      .isEqualTo('example.jp');
-    assertThat(getRootDomain('https://例子.cn'))
-      .isEqualTo('例子.cn');
-    assertThat(getRootDomain('https://subdomain.example.io/path/'))
-      .isEqualTo('example.io');
-setup: |-
-  function extractHostname(url) {
-    var hostname;
+    const storage = {};
+    mockObject('localStorage', {
+      setItem: function(key, value) { storage[key] = value; },
+      getItem: function(key) { return storage[key]; }
+    });
+    mock('getUrl', function(part) {
+      if (part === 'query') return 'clickref=abc123';
+      return 'https://www.example.com.au/?clickref=abc123';
+    });
 
-    if (url.indexOf("//") > -1) {
-      hostname = url.split('/')[2];
-    } else {
-      hostname = url.split('/')[0];
-    }
+    let captured;
+    mock('setCookie', function(name, value, options) {
+      captured = {name: name, value: value, options: options};
+    });
 
-    hostname = hostname.split(':')[0];
-    hostname = hostname.split('?')[0];
+    runCode({clickrefParameter: 'clickref'});
 
-    return hostname;
-  }
+    assertApi('setCookie').wasCalled();
+    assertThat(captured.name).isEqualTo('partnerizeClickReference');
+    assertThat(captured.value).isEqualTo('abc123');
+    // The previous string-splitting heuristic produced 'com.au' here — a public
+    // suffix, which the browser silently discards.
+    assertThat(captured.options['domain']).isEqualTo('auto');
+    assertThat(captured.options['path']).isEqualTo('/');
+    assertThat(storage['partnerizeClickReference']).isEqualTo('abc123');
+    assertApi('gtmOnSuccess').wasCalled();
+- name: Honours a custom click ID parameter name
+  code: |-
+    const storage = {};
+    mockObject('localStorage', {
+      setItem: function(key, value) { storage[key] = value; },
+      getItem: function(key) { return storage[key]; }
+    });
+    mock('getUrl', function(part) {
+      if (part === 'query') return 'utm_source=partner&pz_click=xyz789';
+      return 'https://example.co.uk/?utm_source=partner&pz_click=xyz789';
+    });
 
-  function getRootDomain(url) {
-    var domain = extractHostname(url),
-    splitArr = domain.split('.'),
-    arrLen = splitArr.length;
+    let captured;
+    mock('setCookie', function(name, value, options) {
+      captured = {name: name, value: value, options: options};
+    });
 
-    if (arrLen > 2) {
-      domain = splitArr[arrLen - 2] + '.' + splitArr[arrLen - 1];
-      if (splitArr[arrLen - 2].length == 2 && splitArr[arrLen - 1].length == 2) {
-        domain = splitArr[arrLen - 3] + '.' + domain;
-      }
-    }
-    return domain;
-  }
+    runCode({clickrefParameter: 'pz_click'});
+
+    assertThat(captured.value).isEqualTo('xyz789');
+    assertThat(captured.options['domain']).isEqualTo('auto');
+    assertApi('gtmOnSuccess').wasCalled();
+- name: No cookie written when the click reference is absent
+  code: |-
+    mockObject('localStorage', {
+      setItem: function() { fail('localStorage should not be written'); },
+      getItem: function() { return undefined; }
+    });
+    mock('getUrl', function(part) {
+      if (part === 'query') return 'utm_source=partner';
+      return 'https://example.com/?utm_source=partner';
+    });
+    mock('setCookie', function() {});
+
+    runCode({clickrefParameter: 'clickref'});
+
+    assertApi('setCookie').wasNotCalled();
+    assertApi('gtmOnSuccess').wasCalled();
 
 
 ___NOTES___
